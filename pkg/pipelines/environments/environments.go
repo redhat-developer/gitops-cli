@@ -227,7 +227,7 @@ func ListFiles(fs afero.Fs, base string) (StringSet, error) {
 		if info.IsDir() {
 			return nil
 		}
-		filename := strings.TrimPrefix(path, base+"/")
+		filename := strings.TrimPrefix(filepath.ToSlash(path), filepath.ToSlash(base)+"/")
 		if filename == kustomization {
 			return nil
 		}
