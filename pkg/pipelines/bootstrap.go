@@ -34,6 +34,7 @@ import (
 	"github.com/redhat-developer/kam/pkg/pipelines/tasks"
 	"github.com/redhat-developer/kam/pkg/pipelines/triggers"
 	"github.com/redhat-developer/kam/pkg/pipelines/yaml"
+	pipelinev1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1beta1"
 )
 
 const (
@@ -547,9 +548,13 @@ func createCICDResources(fs afero.Fs, repo scm.Repository, pipelineConfig *confi
 		return nil, otherOutputs, err
 	}
 	outputs[gitopsTasksPath] = tasks.CreateDeployFromSourceTask(cicdNamespace, script)
-	outputs[commitStatusTaskPath] = tasks.CreateCommitStatusTask(cicdNamespace)
-	outputs[ciPipelinesPath] = pipelines.CreateCIPipeline(meta.NamespacedName(cicdNamespace, "ci-dryrun-from-push-pipeline"), cicdNamespace)
-	outputs[appCiPipelinesPath] = pipelines.CreateAppCIPipeline(meta.NamespacedName(cicdNamespace, "app-ci-pipeline"))
+	// currently, the commit status task doesn't support enterprise repository
+	// enable it by default once the status task supports enterprise repository
+	if o.PrivateRepoDriver == "" {
+		outputs[commitStatusTaskPath] = tasks.CreateCommitStatusTask(cicdNamespace)
+	}
+	outputs[ciPipelinesPath] = removeCommitStatus(pipelines.CreateCIPipeline(meta.NamespacedName(cicdNamespace, "ci-dryrun-from-push-pipeline"), cicdNamespace), o.PrivateRepoDriver)
+	outputs[appCiPipelinesPath] = removeCommitStatus(pipelines.CreateAppCIPipeline(meta.NamespacedName(cicdNamespace, "app-ci-pipeline")), o.PrivateRepoDriver)
 	pushBinding, pushBindingName := repo.CreatePushBinding(cicdNamespace)
 	outputs[filepath.ToSlash(filepath.Join("05-bindings", pushBindingName+".yaml"))] = pushBinding
 	outputs[pushTemplatePath] = triggers.CreateCIDryRunTemplate(cicdNamespace, saName)
@@ -627,4 +632,24 @@ func generateSecrets(outputs res.Resources, otherOutputs res.Resources, sa *core
 	otherOutputs[filepath.Join("secrets", basicAuthTokenName+".yaml")] = basicAuthSecret
 	outputs[serviceAccountPath] = roles.AddSecretToSA(sa, basicAuthSecret.Name)
 	return nil
+}
+
+// remove the commit status task and it's dependency
+func removeCommitStatus(pipeline *pipelinev1.Pipeline, driver string) *pipelinev1.Pipeline {
+	if driver == "" {
+		return pipeline
+	}
+	setPendingStatusTask := "set-pending-status"
+	pipeline.Spec.Finally = nil
+	tasks := []pipelinev1.PipelineTask{}
+	for _, task := range pipeline.Spec.Tasks {
+		if len(task.RunAfter) > 0 && task.RunAfter[0] == setPendingStatusTask {
+			task.RunAfter = nil
+		}
+		if task.Name != setPendingStatusTask {
+			tasks = append(tasks, task)
+		}
+	}
+	pipeline.Spec.Tasks = tasks
+	return pipeline
 }
